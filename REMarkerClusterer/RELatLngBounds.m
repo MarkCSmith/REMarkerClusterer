@@ -25,6 +25,17 @@
 
 #import "RELatLngBounds.h"
 
+
+//#define RE_ENABLE_UNIT_TESTS
+
+#ifdef RE_ENABLE_UNIT_TESTS
+static BOOL gIsFirstTime = YES;
+
+@interface RELatLngBounds()
+- (void)runContainsTests;
+@end
+#endif
+
 @implementation RELatLngBounds
 
 - (id)initWithMapView:(MKMapView *)mapView
@@ -67,16 +78,94 @@
 
 - (bool)contains:(CLLocationCoordinate2D)coordinate
 {
-    CGPoint point = [_mapView convertCoordinate:coordinate toPointToView:_mapView];
-    CGPoint topLeft = [_mapView convertCoordinate:_northWest toPointToView:_mapView];
-    CGPoint bottomRight = [_mapView convertCoordinate:_southEast toPointToView:_mapView];
-    CGPoint topRight = [_mapView convertCoordinate:_northEast toPointToView:_mapView];
+#ifdef RE_ENABLE_UNIT_TESTS
+	if (gIsFirstTime) {
+		gIsFirstTime = NO;
+		[self runContainsTests];
+	}
+#endif
 
-    if (point.x >= topLeft.x && point.x <= topRight.x)
-        if (point.y >= topLeft.y && point.y <= bottomRight.y)
-            return YES;
-    
-    return NO;
+	if ((coordinate.latitude > _northEast.latitude) ||
+		(coordinate.latitude < _southWest.latitude)) {
+		return NO;	// latitude is out of bounds.
+	}
+
+	// Case 1: region does not span the 180th meridian (aka the International
+	//         Date Line).
+	if (_northEast.longitude >= _southWest.longitude) {
+		return ((coordinate.longitude <= _northEast.longitude) &&
+				(coordinate.longitude >= _southWest.longitude));
+	}
+
+	// Case 2: region spans the 180th meridian.  Check both sides.
+	return (coordinate.longitude < _northEast.longitude) ||
+	       (coordinate.longitude > _southWest.longitude);
 }
+
+#ifdef RE_ENABLE_UNIT_TESTS
+- (void)runContainsTests
+{
+	typedef struct  {
+		const char *tag;
+		CLLocationCoordinate2D ne;
+		CLLocationCoordinate2D sw;
+	} REContainsLatLngBoundsInfo;
+
+	typedef struct {
+		const char *boundsTag;
+		CLLocationCoordinate2D coord;
+		BOOL isInBounds;
+	} REContainsTest;
+
+	REContainsLatLngBoundsInfo boundsInfoArray[] = {
+		{ "Asia",          { 33.6,  141.0 }, { 33.4,  139.0 } },
+		{ "NorthAmerica",  { 45.5,  -82.5 }, { 44.5,  -83.5 } },
+		{ "Dateline1",     { 10.5, -179.5 }, {  9.5,  179.5 } },
+		{ "Dateline2",     {  0.5, -179.5 }, { -0.5,  179.5 } },
+	};
+	NSUInteger boundsInfoCount = (sizeof(boundsInfoArray) / sizeof(REContainsLatLngBoundsInfo));
+
+	REContainsTest testArray[] = {
+		{ "Asia",          { 33.5,  140.0 }, YES },
+		{ "Asia",          { 33.5,  141.1 }, NO  },
+		{ "Asia",          { 33.5,  138.9 }, NO  },
+		{ "NorthAmerica",  { 45.0,  -83.0 }, YES },
+		{ "NorthAmerica",  { 45.5,  -84.0 }, NO  },
+		{ "NorthAmerica",  { 45.5,  -82.0 }, NO  },
+		{ "Dateline1",     { 10.0,  179.9 }, YES },
+		{ "Dateline1",     { 10.0, -179.9 }, YES },
+		{ "Dateline1",     { 10.0,  179.4 }, NO  },
+		{ "Dateline1",     { 10.0, -179.4 }, NO  },
+		{ "Dateline2",     {  0.0,  179.9 }, YES },
+		{ "Dateline2",     {  0.0, -179.9 }, YES },
+		{ "Dateline2",     {  0.6,  179.9 }, NO  },
+		{ "Dateline2",     { -0.6,  179.9 }, NO  },
+	};
+	NSUInteger testCount = (sizeof(testArray) / sizeof(REContainsTest));
+
+	for (unsigned long i = 0; i < testCount; ++i) {
+		REContainsTest *test = &testArray[i];
+
+		// Find boundsInfo element for this test case.
+		REContainsLatLngBoundsInfo *boundsInfo = NULL;
+		for (unsigned long j = 0; j < boundsInfoCount; ++j) {
+			if (0 == strcmp(boundsInfoArray[j].tag, test->boundsTag)) {
+				boundsInfo = &boundsInfoArray[j];
+				break;
+			}
+		}
+
+		if (!boundsInfo)
+			NSLog(@"test %lu: Missing boundInfo for tag %s\n", i, test->boundsTag);
+		else {
+			RELatLngBounds *tmpLatLngBounds = [[RELatLngBounds alloc] initWithMapView:_mapView];
+			[tmpLatLngBounds setSouthWest:boundsInfo->sw northEast:boundsInfo->ne];
+			BOOL rv = [tmpLatLngBounds contains:test->coord];
+			BOOL didPass = ((rv && test->isInBounds) || (!rv && !test->isInBounds));
+			NSLog(@"test %lu: %@ (%s)\n", i, (didPass) ? @"OK" : @"FAIL", test->boundsTag);
+		}
+	}
+}
+#endif
 
 @end
