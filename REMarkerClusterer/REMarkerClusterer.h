@@ -50,6 +50,7 @@
 @property (strong, readonly, nonatomic) NSMutableArray *markers;
 @property (strong, readonly, nonatomic) NSMutableArray *clusters;
 @property (assign, readwrite, nonatomic) NSInteger gridSize;
+@property (assign, readwrite, nonatomic) NSUInteger maxClustersToAnimate;
 @property (assign, readwrite, nonatomic) BOOL isAverageCenter;
 @property (assign, readwrite, nonatomic) CGFloat maxDelayOfSplitAnimation;
 @property (assign, readwrite, nonatomic) CGFloat maxDurationOfSplitAnimation;

@@ -23,6 +23,9 @@
 // THE SOFTWARE.
 //
 
+//#define RE_DEBUG_LOG
+//#define RE_DEBUG_LOG_VERBOSE
+
 #import <MapKit/MapKit.h>
 #import <CoreLocation/CoreLocation.h>
 #include <libkern/OSAtomic.h>
@@ -36,6 +39,10 @@
 
 @property (assign, readwrite, nonatomic) BOOL animating;
 @property (strong, readonly, nonatomic) NSArray *markerAnnotations;
+@property (assign, readwrite, nonatomic) MKCoordinateSpan prevSpan;
+#ifdef RE_DEBUG_LOG
+@property (assign, readwrite, nonatomic) unsigned long clusterizeCount;
+#endif
 
 @end
 
@@ -48,6 +55,7 @@
         return nil;
     
     _gridSize = 25;
+    _maxClustersToAnimate = 0; // No maximum by default.
     _maxDelayOfSplitAnimation = 0;
     _maxDelayOfSplitAnimation = 0.25;
     _tempViews = [[NSMutableArray alloc] init];
@@ -67,6 +75,7 @@
     
     self.mapView = mapView;
     self.delegate = delegate;
+    self.prevSpan = mapView.region.span;
     
     return self;
 }
@@ -172,31 +181,33 @@
     }
 }
 
+// This method returns a value that is only useful for comparison purposes; it
+// does not return units such as meters or kilometers.
 - (CGFloat)distanceBetweenPoints:(CLLocationCoordinate2D)p1 p2:(CLLocationCoordinate2D)p2
 {
-	CGFloat R = 6371; // Radius of the Earth in km
-	CGFloat dLat = (p2.latitude - p1.latitude) * M_PI / 180;
-	CGFloat dLon = (p2.longitude - p1.longitude) * M_PI / 180;
-	CGFloat a = sin(dLat / 2) * sin(dLat / 2) + cos(p1.latitude * M_PI / 180) * cos(p2.latitude * M_PI / 180) * sin(dLon / 2) * sin(dLon / 2);
-	CGFloat c = 2 * atan2(sqrt(a), sqrt(1 - a));
-	CGFloat d = R * c;
-	return d;
+    const CGFloat kPI_DIV_180 = (M_PI / 180.0);
+
+    CGFloat dLat = (p2.latitude - p1.latitude) * kPI_DIV_180;
+    CGFloat dLon = (p2.longitude - p1.longitude) * kPI_DIV_180;
+    CGFloat a = pow(sin(dLat / 2), 2) + cos(p1.latitude * kPI_DIV_180)
+                      * cos(p2.latitude * kPI_DIV_180) * pow(sin(dLon / 2), 2);
+    return atan2(sqrt(a), sqrt(1 - a));
 }
 
 - (void)addToClosestCluster:(id<REMarker>)marker
 {
-    CGFloat distance = 40000; // Some large number
+    CGFloat distanceToClosestCluster = CGFLOAT_MAX;
     RECluster *clusterToAddTo;
     for (RECluster *cluster in _clusters) {
         if ([cluster hasCenter]) {
             CGFloat d = [self distanceBetweenPoints:cluster.coordinate p2:marker.coordinate];
-            if (d < distance) {
-                distance = d;
+            if (d < distanceToClosestCluster) {
+                distanceToClosestCluster = d;
                 clusterToAddTo = cluster;
             }
         }
     }
-    
+
     if (clusterToAddTo && [clusterToAddTo isMarkerInClusterBounds:marker]) {
         [clusterToAddTo addMarker:marker];
     } else {
@@ -213,8 +224,14 @@
         if (marker.coordinate.latitude == 0 && marker.coordinate.longitude == 0) 
             continue;
 
-         [self addToClosestCluster:marker];
+        // Add to existing cluster if within proximity or create a new cluster.
+        [self addToClosestCluster:marker];
     }
+
+#ifdef RE_DEBUG_LOG
+    NSLog(@"createClusters – created %lu clusters from %lu markers\n",
+          (unsigned long)[_clusters count], (unsigned long)[_markers count]);
+#endif
 }
 
 - (void)clusterize
@@ -279,9 +296,9 @@
                                              [self clusterizeFinished];
                                      }];
                 }
-                [_mapView removeAnnotation:endCluster];
-                
             }
+
+            [_mapView removeAnnotation:endCluster];
         } else {
             [_mapView addAnnotations:annotations];
             [_mapView removeAnnotation:endCluster];
@@ -302,8 +319,10 @@
     for (NSString *mergeatorKey in [mergeators allKeys]) {
         NSArray *annotations = [mixes objectForKey:mergeatorKey];
         RECluster *endCluster = [mergeators objectForKey:mergeatorKey];
-        for (RECluster *annotation in annotations){
-            if (_animated) {
+        RECluster *destinationCluster = nil;
+        if (_animated) {
+            destinationCluster = [annotations lastObject];
+            for (RECluster *annotation in annotations){
                 didUseAnimation = YES;
                 OSAtomicIncrement32Barrier(&pendingAnimationsCount);
                 _animating = YES;
@@ -314,7 +333,7 @@
                                      annotation.coordinate = endCluster.coordinate;
                                  }  completion:^(BOOL finished){
                                      weakSelf.animating = NO;
-                                     if (annotation != [annotations lastObject]) {
+                                     if (annotation != destinationCluster) {
                                          [weakSelf.mapView removeAnnotation:annotation];
                                      } else {
                                          [_mapView removeAnnotation:annotation];
@@ -323,18 +342,21 @@
                                      if (OSAtomicDecrement32Barrier(&pendingAnimationsCount) <= 0)
                                          [self clusterizeFinished];
                                  }];
-            }else{
-                [_mapView removeAnnotations:annotations];
-                [_mapView addAnnotation:endCluster];
             }
-            ((RECluster *)[annotations lastObject]).title = endCluster.title;
-            ((RECluster *)[annotations lastObject]).subtitle = endCluster.subtitle;
-            MKAnnotationView *view = [_mapView viewForAnnotation:(_animated)?[annotations lastObject]:endCluster];
-            [[view superview] bringSubviewToFront:view];
-            if (_animated) ((RECluster *)[annotations lastObject]).markers = endCluster.markers;
-            if ([self.delegate respondsToSelector:@selector(markerClusterer:withMapView:updateViewOfAnnotation:withView:)]) {
-                [self.delegate markerClusterer:self withMapView:_mapView updateViewOfAnnotation:annotation withView:[_mapView viewForAnnotation:annotation]];
-            }
+            destinationCluster.title = endCluster.title;
+            destinationCluster.subtitle = endCluster.subtitle;
+            destinationCluster.markers = endCluster.markers;
+        } else { // !_animated
+            destinationCluster = endCluster;
+            [_mapView removeAnnotations:annotations];
+            [_mapView addAnnotation:endCluster];
+        }
+
+        MKAnnotationView *view = [_mapView viewForAnnotation:destinationCluster];
+        [[view superview] bringSubviewToFront:view];
+        if (_animated && [self.delegate respondsToSelector:@selector(markerClusterer:withMapView:updateViewOfAnnotation:withView:)]) {
+                [self.delegate markerClusterer:self withMapView:_mapView updateViewOfAnnotation:destinationCluster
+                                      withView:[_mapView viewForAnnotation:destinationCluster]];
         }
     }
 
@@ -342,38 +364,144 @@
         [self clusterizeFinished];
 }
 
+#ifdef RE_DEBUG_LOG_VERBOSE
+- (NSString *)indentString:(NSUInteger)aIndentLevel
+{
+    NSMutableString *s = [NSMutableString stringWithCapacity:0];
+    while (aIndentLevel-- != 0)
+        [s appendString:@"  "];
+    return s;
+}
+
+- (void)log_RECluster:(RECluster *)aCluster withDescription:(NSString *)aDesc
+          indentLevel:(NSUInteger)aIndentLevel
+{
+    NSString *indentStr = [self indentString:aIndentLevel];
+    NSArray *ary = self.markerAnnotations;
+    BOOL isOnMap = [ary containsObject:aCluster];
+    NSLog(@"%@%@ RECluster: %p (%lu markers); isOnMap: %d\n",
+          indentStr, aDesc, aCluster, (unsigned long)[aCluster.markers count], isOnMap);
+    [self log_Array:aCluster.markers withDescription:@"markers"
+        indentLevel:(aIndentLevel + 1)];
+}
+
+- (void)log_REMarker:(REMarker *)aMarker withDescription:(NSString *)aDesc
+         indentLevel:(NSUInteger)aIndentLevel
+{
+    NSString *indentStr = [self indentString:aIndentLevel];
+    NSLog(@"%@%@ REMarker %p: id: %lu\n",
+          indentStr, aDesc, aMarker, (unsigned long)aMarker.markerId);
+    indentStr = [self indentString:(aIndentLevel + 1)];
+    NSLog(@"%@title: %@\n", indentStr, aMarker.title);
+    NSLog(@"%@subtitle: %@\n", indentStr, aMarker.subtitle);
+    NSLog(@"%@coordinate: %f,%f\n", indentStr, aMarker.coordinate.latitude,
+          aMarker.coordinate.longitude);
+}
+
+- (void)log_Array:(NSArray *)aArray withDescription:(NSString *)aDesc
+      indentLevel:(NSUInteger)aIndentLevel
+{
+    NSString *indentStr = [self indentString:aIndentLevel];
+    NSUInteger count = [aArray count];
+    NSLog(@"%@%@ array (%lu objects)\n",
+          indentStr, aDesc, (unsigned long)count);
+    for (NSUInteger i = 0; i < count; ++i)
+    {
+        id obj = [aArray objectAtIndex:i];
+        NSString *desc = [NSString stringWithFormat:@"element %lu", (unsigned long)i];
+        [self log_Object:obj withDescription:desc indentLevel:(aIndentLevel + 1)];
+    }
+}
+
+- (void)log_Object:(id)aObject withDescription:(NSString *)aDesc
+          indentLevel:(NSUInteger)aIndentLevel
+{
+    if ([aObject isKindOfClass:[NSArray class]])
+    {
+        NSArray *arr = (NSArray *)aObject;
+        [self log_Array:arr withDescription:aDesc indentLevel:aIndentLevel];
+    }
+    else if ([aObject isKindOfClass:[REMarker class]])
+    {
+        REMarker *marker = (REMarker *)aObject;
+        [self log_REMarker:marker withDescription:aDesc indentLevel:aIndentLevel];
+    }
+    else if ([aObject isKindOfClass:[RECluster class]])
+    {
+         RECluster *cluster = (RECluster *)aObject;
+         [self log_RECluster:cluster withDescription:aDesc indentLevel:aIndentLevel];
+    }
+    else
+    {
+        NSString *indentStr = [self indentString:aIndentLevel];
+        NSLog(@"%@%@ - unknown object %@\n", indentStr, aDesc, [aObject class]);
+    }
+}
+
+- (void)log_dict:(NSDictionary *)aDict withDescription:(NSString *)aDesc
+{
+    NSLog(@"%@ - %ld objects\n", aDesc, (unsigned long)[aDict count]);
+    unsigned long idx = 0;
+    for (id key in aDict.allKeys)
+    {
+        NSString *desc = [NSString stringWithFormat:@"object %lu - key %@", idx++, key];
+        id obj = [aDict objectForKey:key];
+        [self log_Object:obj withDescription:desc indentLevel:1];
+    }
+}
+#endif // RE_DEBUG_LOG_VERBOSE
+
 - (void)clusterize:(BOOL)animated
 {
     if (_animating && animated)
         return;
 
+#ifdef RE_DEBUG_LOG
+    ++self.clusterizeCount;
+    NSLog(@"BEGIN clusterize: %lu (animation requested: %@)\n",
+          self.clusterizeCount, animated ? @"YES" : @"NO");
+#endif
+
     if ([_delegate respondsToSelector:@selector(willClusterize:)])
         [_delegate willClusterize:self];
         
-    _animated = animated;
-    
     [self createClusters];
+
+    if (0 == _maxClustersToAnimate)
+        _animated = animated;
+    else
+        _animated = ([_clusters count] <= _maxClustersToAnimate);
+
+    NSArray *currentClusterArray = self.markerAnnotations;
+    NSArray *newClusterArray = self.clusters;
     
     NSMutableDictionary *mixDictionary = [NSMutableDictionary dictionaryWithCapacity:0];
-    NSMutableArray *remainingAnnotations = [NSMutableArray arrayWithCapacity:0];
     
-    for (RECluster *cluster in ((self.markerAnnotations.count > _clusters.count) ? self.markerAnnotations : _clusters)) {
+    NSArray *outerArray = nil;
+    NSArray *innerArray = nil;
+    if (currentClusterArray.count > newClusterArray.count) {
+        outerArray = currentClusterArray;
+        innerArray = newClusterArray;
+    } else {
+        outerArray = newClusterArray;
+        innerArray = currentClusterArray;
+    }
+    for (RECluster *cluster in outerArray) {
         NSInteger numberOfMarkers = 1;
         NSMutableArray *posiblesArrays = [NSMutableArray arrayWithCapacity:0];
-        for (RECluster *cluster2 in ((self.markerAnnotations.count <= _clusters.count)?self.markerAnnotations:_clusters)) {
+        for (RECluster *cluster2 in innerArray) {
             NSInteger markers = [cluster markersInClusterFromMarkers:cluster2.markers];
             if(markers >= numberOfMarkers){
                 [posiblesArrays addObject:cluster2];
                 numberOfMarkers = markers;
             }
         }
-        
+
         if (posiblesArrays.count == 1) {
             [self addObject:cluster toDictionary:mixDictionary withKey:((RECluster *)[posiblesArrays lastObject]).coordinateTag];
-        } else if(posiblesArrays.count == 0) {
-            [remainingAnnotations addObject:cluster];
-        } else {
-            NSInteger minor = INT16_MAX;
+        } else if (posiblesArrays.count > 0) {
+            // Find the cluster which has the fewest child markers and add it to mixDictionary.
+            NSInteger minor = NSIntegerMax;
             NSInteger index = posiblesArrays.count-1;
             for (RECluster *cluster2 in posiblesArrays) {
                 if (cluster2.markers.count < minor) {
@@ -387,28 +515,53 @@
     
     NSMutableDictionary *mergeators = [NSMutableDictionary dictionaryWithCapacity:0];
     
-    for (RECluster *cluster in ((self.markerAnnotations.count <= _clusters.count) ? self.markerAnnotations : _clusters)) {
+    for (RECluster *cluster in innerArray) {
         [mergeators setObject:cluster forKey:cluster.coordinateTag];
     }
-    
+
+#ifdef RE_DEBUG_LOG_VERBOSE
+    [self log_dict:mixDictionary withDescription:@"mixDictionary"];
+    [self log_dict:mergeators withDescription:@"mergeators"];
+#endif
+
     NSDictionary *dic = [NSDictionary dictionaryWithObjectsAndKeys:
                          mergeators,mergeatorsKey,
                          mixDictionary,mixesKey,
                          nil];
-    
-    if (self.markerAnnotations.count == 0) {
-        [_mapView addAnnotations:_clusters];
+
+    if (currentClusterArray.count == 0) {
+#ifdef RE_DEBUG_LOG
+        NSLog(@"clusterize: no existing clusters on the map\n");
+#endif
+        [_mapView addAnnotations:newClusterArray];
         [self clusterizeFinished];
     }
-    else if (self.markerAnnotations.count > _clusters.count) {
+    else if (currentClusterArray.count > newClusterArray.count) {
+#ifdef RE_DEBUG_LOG
+        NSLog(@"clusterize: joining clusters\n");
+#endif
         [self joinAnnotationsWithDictionary:dic];
-        //[self addAnnotationsWithOutSpliting:remainingAnnotations];
-    } else if(self.markerAnnotations.count < _clusters.count) {
+    } else if (currentClusterArray.count < newClusterArray.count) {
+#ifdef RE_DEBUG_LOG
+        NSLog(@"clusterize: splitting clusters\n");
+#endif
         [self splitAnnotationsWithDictionary:dic];
     } else {
+#ifdef RE_DEBUG_LOG
+        NSLog(@"clusterize: cluster count did not change; removing/re-adding all\n");
+#endif
+        // Because the location associated with one or more markers may have
+        // changed, remove and re-add all annotations.
+        // TODO: Optimize for the case where markers do not move during zoom, etc.
+        [_mapView removeAnnotations:currentClusterArray];
+        [_mapView addAnnotations:newClusterArray];
         [self clusterizeFinished];
     }
 
+#ifdef RE_DEBUG_LOG
+    NSLog(@"END clusterize: %lu (animated: %@)\n\n",
+          self.clusterizeCount, _animated ? @"YES" : @"NO");
+#endif
 }
 
 - (BOOL)isAnimating
@@ -442,6 +595,7 @@
     return result;
 }
 
+// markerAnnotations is a readonly property; this is its getter.
 - (NSArray *)markerAnnotations
 {
     NSMutableArray *annotations = [NSMutableArray array];
@@ -465,10 +619,20 @@
 
 - (void)mapView:(MKMapView *)mapView regionDidChangeAnimated:(BOOL)animated
 {
-    [self clusterize:YES];
-    if (![_delegate respondsToSelector:@selector(willClusterize:)])
-        [self.mapView deselectAnnotation:[self.mapView.selectedAnnotations objectAtIndex:0] animated:NO];
-    
+    // If the user simply pans the map (no change in zoomlevel), we do not
+    // need to re-clusterize.  We detect this situation by ignoring small
+    // changes to the map span's longitudeDelta.
+    MKCoordinateSpan newSpan = mapView.region.span;
+    double longitudeSpanChange = fabs(newSpan.longitudeDelta - self.prevSpan.longitudeDelta);
+    if (longitudeSpanChange > 0.00001) {
+        self.prevSpan = newSpan;
+
+        [self clusterize:YES];
+
+        if (![_delegate respondsToSelector:@selector(willClusterize:)])
+            [self.mapView deselectAnnotation:[self.mapView.selectedAnnotations objectAtIndex:0] animated:NO];
+    }
+
     if ([_delegate respondsToSelector:@selector(mapView:regionDidChangeAnimated:)])
         [_delegate mapView:mapView regionDidChangeAnimated:animated];
 }
