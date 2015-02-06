@@ -470,7 +470,7 @@
     if (0 == _maxClustersToAnimate)
         _animated = animated;
     else
-        _animated = ([_clusters count] <= _maxClustersToAnimate);
+        _animated = animated && ([_clusters count] <= _maxClustersToAnimate);
 
     NSArray *currentClusterArray = self.markerAnnotations;
     NSArray *newClusterArray = self.clusters;
