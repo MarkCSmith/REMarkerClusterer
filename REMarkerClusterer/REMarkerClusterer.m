@@ -476,6 +476,7 @@
     NSArray *newClusterArray = self.clusters;
     
     NSMutableDictionary *mixDictionary = [NSMutableDictionary dictionaryWithCapacity:0];
+    NSMutableArray *remainingAnnotations = [NSMutableArray arrayWithCapacity:0];
     
     NSArray *outerArray = nil;
     NSArray *innerArray = nil;
@@ -499,7 +500,9 @@
 
         if (posiblesArrays.count == 1) {
             [self addObject:cluster toDictionary:mixDictionary withKey:((RECluster *)[posiblesArrays lastObject]).coordinateTag];
-        } else if (posiblesArrays.count > 0) {
+        } else if (posiblesArrays.count == 0) {
+            [remainingAnnotations addObject:cluster];
+        } else {
             // Find the cluster which has the fewest child markers and add it to mixDictionary.
             NSInteger minor = NSIntegerMax;
             NSInteger index = posiblesArrays.count-1;
@@ -541,11 +544,13 @@
         NSLog(@"clusterize: joining clusters\n");
 #endif
         [self joinAnnotationsWithDictionary:dic];
+        [_mapView removeAnnotations:remainingAnnotations];
     } else if (currentClusterArray.count < newClusterArray.count) {
 #ifdef RE_DEBUG_LOG
         NSLog(@"clusterize: splitting clusters\n");
 #endif
         [self splitAnnotationsWithDictionary:dic];
+        [_mapView addAnnotations:remainingAnnotations];
     } else {
 #ifdef RE_DEBUG_LOG
         NSLog(@"clusterize: cluster count did not change; removing/re-adding all\n");
