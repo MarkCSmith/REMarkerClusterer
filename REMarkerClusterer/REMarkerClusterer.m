@@ -743,6 +743,7 @@
         [_delegate mapView:mapView annotationView:view didChangeDragState:newState fromOldState:oldState];
 }
 
+#if __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_7_0
 - (MKOverlayView *)mapView:(MKMapView *)mapView viewForOverlay:(id <MKOverlay>)overlay NS_AVAILABLE(NA, 4_0)
 {
     if ([_delegate respondsToSelector:@selector(mapView:viewForOverlay:)])
@@ -756,6 +757,7 @@
     if ([_delegate respondsToSelector:@selector(mapView:didAddOverlayViews:)])
         [_delegate mapView:mapView didAddOverlayViews:overlayViews];
 }
+#endif
 
 - (void)mapView:(MKMapView *)mapView didChangeUserTrackingMode:(MKUserTrackingMode)mode animated:(BOOL)animated NS_AVAILABLE(NA, 5_0)
 {
@@ -767,7 +769,7 @@
     if ([_delegate respondsToSelector:@selector(mapView:rendererForOverlay:)]) {
         return [_delegate mapView:mapView rendererForOverlay:overlay];
     }
-    return nil;
+    return [[MKOverlayRenderer alloc] init];
 }
 
 -(void)mapViewDidFinishRenderingMap:(MKMapView *)mapView fullyRendered:(BOOL)fullyRendered
