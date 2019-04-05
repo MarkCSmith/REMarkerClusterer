@@ -290,8 +290,8 @@
                                          annotation.coordinate = realCoordinate;
                                      }  completion:^(BOOL finished){
                                          weakSelf.animating = NO;
-                                         [_mapView removeAnnotation:annotation];
-                                         [_mapView addAnnotation:annotation];
+                                         [weakSelf.mapView removeAnnotation:annotation];
+                                         [weakSelf.mapView addAnnotation:annotation];
                                          if (OSAtomicDecrement32Barrier(&pendingAnimationsCount) <= 0)
                                              [self clusterizeFinished];
                                      }];
@@ -336,8 +336,8 @@
                                      if (annotation != destinationCluster) {
                                          [weakSelf.mapView removeAnnotation:annotation];
                                      } else {
-                                         [_mapView removeAnnotation:annotation];
-                                         [_mapView addAnnotation:annotation];
+                                         [weakSelf.mapView removeAnnotation:annotation];
+                                         [weakSelf.mapView addAnnotation:annotation];
                                      }
                                      if (OSAtomicDecrement32Barrier(&pendingAnimationsCount) <= 0)
                                          [self clusterizeFinished];
