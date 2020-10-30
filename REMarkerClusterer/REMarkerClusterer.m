@@ -683,7 +683,7 @@
         pinView.rightCalloutAccessoryView = detailButton;
     }
 	
-	pinView.pinColor = MKPinAnnotationColorRed;
+	pinView.pinTintColor = [MKPinAnnotationView redPinColor];
     pinView.canShowCallout = YES;
     return pinView;
 }
